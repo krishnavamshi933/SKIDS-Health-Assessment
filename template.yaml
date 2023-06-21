@@ -1,0 +1,103 @@
+Resources:
+  InputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: input-project
+
+  OutputBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: project-outpu
+
+  FrameExtractionFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: frame-extraction-function
+      Runtime: nodejs14.x
+      Handler: index.handler
+      Code:
+        ZipFile: |
+          const AWS = require('aws-sdk');
+          const s3 = new AWS.S3();
+          const mediaConvert = new AWS.MediaConvert();
+
+          exports.handler = async (event, context) => {
+            const bucketName = event.Records[0].s3.bucket.name;
+            const objectKey = event.Records[0].s3.object.key;
+
+            const jobSettings = {
+              Inputs: [
+                {
+                  FileInput: `s3://${bucketName}/${objectKey}`
+                }
+              ],
+              OutputGroups: [
+                {
+                  OutputGroupSettings: {
+                    Type: "FILE_GROUP_SETTINGS",
+                    FileGroupSettings: {
+                      Destination: {
+                        S3Bucket: { Ref: "OutputBucket" }
+                      }
+                    }
+                  },
+                  Outputs: [
+                    {
+                      VideoDescription: {
+                        CodecSettings: {
+                          Codec: "FRAME_CAPTURE",
+                          FrameCaptureSettings: {
+                            CaptureInterval: 30,
+                            Format: "jpg"
+                          }
+                        }
+                      },
+                      OutputSettings: {
+                        S3OutputSettings: {
+                          OutputS3BucketName: { Ref: "OutputBucket" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              ]
+            };
+
+            const createJobParams = {
+              JobTemplate: "frame-extraction-job-template",
+              UserMetadata: {
+                SourceS3Bucket: bucketName,
+                SourceS3Key: objectKey
+              },
+              Role: { Ref: "MediaConvertRole" },
+              Settings: jobSettings
+            };
+
+            try {
+              const response = await mediaConvert.createJob(createJobParams).promise();
+              console.log("MediaConvert job created successfully:", response.Job.Id);
+            } catch (error) {
+              console.error("Error creating MediaConvert job:", error);
+              throw error;
+            }
+          };
+          
+      Timeout: 300
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Environment:
+        Variables:
+          OutputBucket: !Ref OutputBucket
+
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: lambda-execution-role
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
